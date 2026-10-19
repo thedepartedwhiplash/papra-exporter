@@ -35,6 +35,15 @@ Thanks for your interest in improving Papra Mass Exporter. This project is an in
 
 - Test against a self-hosted Papra instance where possible, and never commit API tokens or other secrets.
 
+## Reporting issues
+
+Bug reports and feature requests are welcome through the repository's issue tracker.
+
+- **Bug reports:** describe what you did, what you expected, and what happened instead. Include your OS, the Python version, whether you used the CLI or the GUI, and any relevant error output.
+- **Feature requests:** explain the use case and the problem you're trying to solve, not just the solution you have in mind.
+
+Please search existing issues before opening a new one, and never include API tokens or other secrets.
+
 ## Submitting changes
 
 1. Create a branch with a descriptive name.
