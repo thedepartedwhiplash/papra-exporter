@@ -108,7 +108,7 @@ Flet packages a Python app rooted at a directory (default `.`) and expects a `ma
 
 ## Contributing
 
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, development guidelines, and how to submit changes.
+Contributions are welcome. Found a bug or want a feature? Open an issue. See [CONTRIBUTING.md](CONTRIBUTING.md) for reporting guidelines, setup instructions, and how to submit changes.
 
 ## License
 
