@@ -1,6 +1,6 @@
 # Papra Mass Exporter
 
-A bulk document exporter for self-hosted [Papra](https://papra.app) instances. It downloads the original file of every document in one or more organizations, optionally filtered by tag, verifies each download against the SHA-256 hash recorded by Papra, and writes a `manifest.json` describing everything it exported. I created this app as Papra currently has no native mass export feature. In the future, Papra may add this fucntionality, upon which this app will be obsolete.
+A bulk document exporter for self-hosted [Papra](https://papra.app) instances. It downloads the original file of every document in one or more organizations, optionally filtered by tag, date, file type or name, verifies each download against the SHA-256 hash recorded by Papra, and writes a `manifest.json` describing everything it exported. I created this app as Papra currently has no native mass export feature. In the future, Papra may add this fucntionality, upon which this app will be obsolete.
 
 The project ships two entry points:
 
@@ -10,9 +10,13 @@ The project ships two entry points:
 ## Features
 
 - Exports every document from one or more Papra organizations.
-- Optional tag filtering (match any or all selected tags).
+- Flexible filters that combine with AND: tags (match any or all selected tags), a date range (`--since` / `--until`), MIME type or file extension (`--type`), and a name substring or wildcard pattern (`--name`).
 - Optional inclusion of trashed documents.
-- Verifies each file against the SHA-256 hash Papra recorded.
+- Organizes output with a folder layout: all in one folder, by year, by year and month, or by first tag.
+- Sets saved files' modification times to the document dates (opt out with `--no-preserve-dates`).
+- Verifies each file against the SHA-256 hash Papra recorded, and can re-hash files already on disk and repair any that do not match (`--verify`).
+- Retries just the documents an earlier run recorded as failed or mismatched (`--retry-failed`).
+- Optionally bundles a run's documents into a zip archive (`--zip`).
 - Safe to re-run: completed files are skipped, interrupted downloads never leave a truncated file under its final name, and the manifest is merged by document ID so partial runs do not erase earlier entries.
 - Concurrent downloads with configurable worker count.
 - Cross-platform, filesystem-safe filename sanitization (handles Windows reserved names, illegal characters, and duplicate names).
@@ -54,24 +58,41 @@ uv run python app/papra_export.py --tag invoice --out papra-export
 # Require several tags at once, and include trashed documents
 uv run python app/papra_export.py --tag invoice --tag 2026 --match all --include-trash
 
+# Filter by date range, file type and name (all filters combine with AND)
+uv run python app/papra_export.py --since 2026-01-01 --until 2026-06-30 --type pdf --name "invoice-*"
+
+# Organize the output by year and month, by year, or by first tag
+uv run python app/papra_export.py --layout year-month
+
+# Re-hash existing files and repair any that do not match
+uv run python app/papra_export.py --verify
+
+# Retry only the documents that failed or mismatched earlier
+uv run python app/papra_export.py --retry-failed
+
+# Also write this run's documents into a zip archive
+uv run python app/papra_export.py --tag invoice --zip invoices.zip
+
 # List available tags with document counts, without downloading anything
 uv run python app/papra_export.py --list-tags
 ```
 
-Run `--help` for the full list of options (`--workers`, `--id-prefix`, `--user-agent`, and more).
+Run `--help` for the full list of options (`--date-field`, `--no-preserve-dates`, `--workers`, `--id-prefix`, `--user-agent`, and more).
 
 ### Output layout
 
 ```
-<out>/<organization name>/<document name>
+<out>/<organization name>/[<layout folders>/]<document name>
 <out>/<organization name>/_trash/...   (only with --include-trash)
 <out>/manifest.json
 ```
 
+With a layout other than `--layout flat` (the default), documents are nested in `year/`, `year/month/` or first-tag folders. Undated documents go into `undated` and untagged ones into `_untagged`.
+
 ### Exit status
 
 - `0` if every selected document was exported (or skipped as already present).
-- Non-zero if the API could not be reached, no organization matched, or any download failed or did not match its recorded hash.
+- Non-zero if the API could not be reached, no organization matched, or any download failed or did not match its recorded hash. Re-run with `--retry-failed` to retry just those documents.
 
 If a server answers HTTP 403 even though the token is valid, a proxy or firewall may be blocking Python's default `User-Agent`. The exporter sends `papra-export/1.0` by default; override it with `--user-agent`.
 
@@ -84,10 +105,10 @@ uv run python app/papra_gui.py
 The GUI walks through three steps:
 
 1. **Connect** — enter the server URL and API token, then test the connection. The token is never written to disk and must be re-entered each session.
-2. **Select** — choose an organization, tags (any/all), whether to include trash, and an output folder.
-3. **Export** — watch progress, cancel a running export, and open the output folder or manifest when finished.
+2. **Select** — choose an organization and tags (any/all), apply filters (date range, file type, name), decide whether to include trash, pick a folder layout and output folder, and toggle options such as preserving file dates, verifying existing files, creating a zip archive, or retrying only previously failed documents.
+3. **Export** — watch live progress and per-status counters (downloaded, skipped, repaired, failed, hash mismatch), cancel a running export, retry failed documents, and open the output folder, zip archive, or manifest when finished.
 
-The server URL, User-Agent, output folder, and theme are remembered in `~/.papra-exporter.json`.
+The server URL, User-Agent, output folder, folder layout, date and verification preferences, and theme are remembered in `~/.papra-exporter.json`. Filter selections are not remembered.
 
 ## Building binaries
 
