@@ -1,9 +1,10 @@
 """Desktop GUI for exporting documents from a self-hosted Papra instance.
 
 A Flet front end for ``papra_export``. Connect with a server URL and API
-token, pick an organization, optional tags and other filters, choose an
-output folder and layout, and watch the export run. All network and file
-work is done by ``papra_export``; this module only builds the interface.
+token, pick an organization (or all of them), tags, filters or hand-picked
+documents, choose an output folder and layout, and watch the export run
+with a live speed and time-left estimate. All network and file work is
+done by ``papra_export``; this module only builds the interface.
 
 Requirements:
   Python 3.10 or later and ``pip install flet``. ``papra_export.py`` must
@@ -22,9 +23,11 @@ layout, date and verification preferences and the theme are remembered in
 import dataclasses
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 from datetime import date
 from pathlib import Path
@@ -51,6 +54,13 @@ LAYOUT_LABELS = {
     "tag": "By first tag",
 }
 DATE_LABELS = {"document": "Document date", "created": "Upload date"}
+# Organization dropdown value that stands for every organization.
+ALL_ORGS = "__all__"
+# Exports that run at least this many seconds end with a sound and the
+# window coming to the front.
+NOTIFY_AFTER = 10
+# Rows shown in the document picker; longer lists are narrowed by search.
+MAX_PICKER_ROWS = 200
 
 
 def load_settings() -> Dict[str, Any]:
@@ -124,6 +134,68 @@ def parse_day(text: str) -> Optional[date]:
     return date.fromisoformat(text) if text else None
 
 
+def human_size(n: float) -> str:
+    """Formats a byte count, for example ``412.0 MB``."""
+    for unit in ("B", "KB", "MB", "GB"):
+        shown = f"{n:.0f}" if unit == "B" else f"{n:.1f}"
+        if float(shown) < 1024:  # compare after rounding: no "1024.0 KB"
+            return f"{shown} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+def fmt_duration(seconds: float) -> str:
+    """Formats a duration, for example ``1 min 20 s``."""
+    secs = int(round(seconds))
+    if secs < 60:
+        return f"{secs} s"
+    mins, secs = divmod(secs, 60)
+    if mins < 60:
+        return f"{mins} min {secs} s"
+    hours, mins = divmod(mins, 60)
+    return f"{hours} h {mins} min"
+
+
+def free_bytes(path: str) -> Optional[int]:
+    """Returns the free space of the drive that will hold ``path``.
+
+    Args:
+        path: A folder that may not exist yet; its nearest existing parent
+            is measured.
+
+    Returns:
+        Free bytes, or None if they cannot be determined.
+    """
+    folder = Path(path).expanduser()
+    while not folder.exists() and folder != folder.parent:
+        folder = folder.parent
+    try:
+        return shutil.disk_usage(folder).free
+    except OSError:
+        return None
+
+
+def doc_label(doc: Dict[str, Any]) -> str:
+    """Returns the name shown for a document."""
+    return doc.get("name") or doc.get("originalName") or doc["id"]
+
+
+def beep() -> None:
+    """Plays a short alert sound, if the platform has an easy way to."""
+    try:
+        if sys.platform == "win32":
+            import winsound
+            winsound.MessageBeep()
+        elif sys.platform == "darwin":
+            subprocess.Popen(["afplay", "/System/Library/Sounds/Glass.aiff"])
+        else:
+            # shortcut: the terminal bell is silent without a terminal,
+            # switch to paplay or similar if Linux users want a sound.
+            print("\a", end="", flush=True)
+    except (OSError, ImportError, RuntimeError):
+        pass
+
+
 def muted(text: str, size: int = 12) -> ft.Text:
     """Builds a small, low-emphasis text."""
     return ft.Text(text, size=size, color=ft.Colors.ON_SURFACE_VARIANT)
@@ -192,6 +264,7 @@ class App:
         self.names_text = ""
         self.retry_failed = False
         self.make_zip = False
+        self.picked: Set[str] = set()
         self.date_field = self._remembered(
             "date_field", DATE_LABELS, "document")
         self.layout = self._remembered("layout", LAYOUT_LABELS, "flat")
@@ -199,6 +272,7 @@ class App:
         self.verify = bool(self.settings.get("verify", False))
         self.options = pe.ExportOptions()
         self.zip_result: Optional[Path] = None
+        self.started = 0.0
         self.out_dir = (self.settings.get("out")
                         or str(Path.home() / "papra-export"))
         self.cancel = threading.Event()
@@ -414,8 +488,20 @@ class App:
     # Screen 2: Select
     # ------------------------------------------------------------------
 
+    def _orgs_for(self, org_id: str) -> List[Dict[str, Any]]:
+        """Returns the organizations a dropdown value stands for.
+
+        Args:
+            org_id: An organization ID, or ``ALL_ORGS``.
+        """
+        if org_id == ALL_ORGS:
+            return list(self.orgs)
+        return [o for o in self.orgs if o["id"] == org_id]
+
     def _org_name(self) -> str:
-        """Returns the display name of the selected organization."""
+        """Returns the display name of the selected organization(s)."""
+        if self.org_id == ALL_ORGS:
+            return "All organizations"
         for o in self.orgs:
             if o["id"] == self.org_id:
                 return o.get("name") or o["id"]
@@ -450,13 +536,19 @@ class App:
 
     def _show_select(self, _e: Any = None) -> None:
         """Shows the screen for choosing what to export and how to save."""
-        if not self.org_id or self.org_id not in {o["id"] for o in self.orgs}:
+        known = {o["id"] for o in self.orgs}
+        if len(self.orgs) > 1:
+            known.add(ALL_ORGS)
+        if self.org_id not in known:
             self.org_id = self.orgs[0]["id"]
+        choices = [ft.DropdownOption(key=o["id"],
+                                     text=o.get("name") or o["id"])
+                   for o in self.orgs]
+        if len(self.orgs) > 1:
+            choices.insert(0, ft.DropdownOption(
+                key=ALL_ORGS, text="All organizations"))
         self.org_dd = ft.Dropdown(
-            label="Organization", value=self.org_id,
-            options=[ft.DropdownOption(key=o["id"],
-                                       text=o.get("name") or o["id"])
-                     for o in self.orgs],
+            label="Organization", value=self.org_id, options=choices,
             on_select=self._on_org)
         self.tags_row = ft.Row(wrap=True, spacing=8, run_spacing=8)
         self.match_btn = ft.SegmentedButton(
@@ -488,6 +580,12 @@ class App:
         self.layout_dd = self._dropdown("Folder layout", LAYOUT_LABELS,
                                         self.layout, "layout", width=280)
         self.zip_note = muted("")
+        self.space_note = muted("")
+        self.pick_btn = secondary("Pick individual documents…",
+                                  self._open_picker, disabled=True)
+        self.pick_note = muted("")
+        self.pick_clear = ft.TextButton(
+            "Clear picks", on_click=self._clear_picks, visible=False)
         self.summary = ft.Text("", weight=ft.FontWeight.W_600)
         self.start_btn = primary("Start export", self._start, disabled=True)
         options = ft.Column([
@@ -522,12 +620,14 @@ class App:
                         spacing=12),
                  ft.Row([self.types_field, self.names_field], spacing=12),
                  muted("Separate several file types or names with commas. "
-                       "Names may use * and ?.")),
+                       "Names may use * and ?."),
+                 ft.Row([self.pick_btn, self.pick_note, self.pick_clear],
+                        spacing=12)),
             card(ft.Row([self.out_field,
                          secondary("Browse", self._browse,
                                    icon=ft.Icons.FOLDER_OPEN)],
                         spacing=12),
-                 self.layout_dd, options),
+                 self.space_note, self.layout_dd, options),
         ], self._actions(
             [secondary("Back", self._show_connect)],
             [self.summary, self.start_btn]))
@@ -558,22 +658,26 @@ class App:
             self._refresh_summary()
 
     def _load_tags(self) -> None:
-        """Clears the tag selection and loads the organization's tags."""
+        """Clears the selection and loads the organization's documents."""
         self.docs = None
         self.tags.clear()
+        self.picked.clear()
         self.tags_row.controls = [muted("Loading tags…", 14)]
         self._refresh_summary()
         self.page.run_thread(self._fetch_tags, self.org_id)
 
     def _fetch_tags(self, org_id: str) -> None:
-        """Lists the organization's documents and builds the tag chips.
+        """Lists the documents of the organization(s) and builds the chips.
 
         Args:
-            org_id: The organization to load; ignored if the user has
-                already switched to another one.
+            org_id: The organization (or ``ALL_ORGS``) to load; ignored if
+                the user has already switched to another one.
         """
+        docs: List[Dict[str, Any]] = []
         try:
-            docs, _ = pe.list_documents(self.base, self.token, org_id)
+            for org in self._orgs_for(org_id):
+                part, _ = pe.list_documents(self.base, self.token, org["id"])
+                docs.extend(part)
         except (urllib.error.URLError, KeyError, ValueError) as e:
             if org_id == self.org_id:
                 self.tags_row.controls = [ft.Text(
@@ -588,7 +692,7 @@ class App:
         self.tags_row.controls = [
             self._make_chip(name, n) for name, n in
             sorted(counts.items(), key=lambda kv: kv[0].lower())
-        ] or [muted("This organization has no tags.", 14)]
+        ] or [muted("There are no tags to choose from.", 14)]
         self._refresh_summary()
 
     def _make_chip(self, name: str, count: int) -> ft.Chip:
@@ -634,29 +738,34 @@ class App:
             tags=sorted(self.tags), match_all=self.match_all, since=since,
             until=until, date_field=self.date_field,
             mime_types=split_list(self.types_text),
-            names=split_list(self.names_text),
+            names=split_list(self.names_text), ids=sorted(self.picked),
             retry_failed=self.retry_failed,
             include_trash=self.include_trash, layout=self.layout,
             preserve_dates=self.preserve_dates, verify=self.verify,
             zip_path=zip_path), ""
 
-    def _matching(self, options: pe.ExportOptions) -> int:
-        """Returns how many active documents the options would select.
+    def _selected(self, options: pe.ExportOptions,
+                  ignore_ids: bool = False) -> List[Dict[str, Any]]:
+        """Returns the active documents the options would select.
 
         Args:
             options: The options built from the current form.
+            ignore_ids: Leave out the hand-picked restriction; the picker
+                uses this to list what can be picked.
         """
         if self.docs is None:
-            return 0
+            return []
         docs = self.docs
         if options.retry_failed:
             failed = pe.failed_document_ids(
                 Path(self.out_dir) / "manifest.json")
             docs = [d for d in docs if d["id"] in failed]
-        return len(pe.select_documents(docs, options))
+        if ignore_ids:
+            options = dataclasses.replace(options, ids=[])
+        return pe.select_documents(docs, options)
 
     def _refresh_summary(self) -> None:
-        """Updates validation, the match count and the Start button."""
+        """Updates validation, the count, size, space check and Start."""
         for control, text in ((self.since_field, self.since_text),
                               (self.until_field, self.until_text)):
             try:
@@ -669,7 +778,14 @@ class App:
         self.zip_note.value = (
             f"Archive: {pe.default_zip_path(Path(self.out_dir))}"
             if self.out_dir else "")
-        n = self._matching(options) if options else 0
+        docs = self._selected(options) if options else []
+        n = len(docs)
+        size = sum(d.get("originalSize") or 0 for d in docs)
+        self.pick_note.value = (f"{len(self.picked)} picked"
+                                if self.picked else "")
+        self.pick_clear.visible = bool(self.picked)
+        self.pick_btn.disabled = self.docs is None or options is None
+        self._refresh_space(size)
         self.summary.color = ft.Colors.ERROR if error else None
         if error:
             self.summary.value = error
@@ -680,11 +796,121 @@ class App:
                     else "documents")
             extra = " (plus matching trashed ones)" \
                 if self.include_trash else ""
-            self.summary.value = f"{n} {what} match{extra}"
+            self.summary.value = (
+                f"{n} {what} match{extra} · {human_size(size)}")
         self.start_btn.disabled = (
             self.docs is None or options is None or not self.out_dir
             or (n == 0 and not self.include_trash))
         self.page.update()
+
+    def _refresh_space(self, size: int) -> None:
+        """Shows how much disk space the export needs and has.
+
+        This only warns; files already on disk need no space, so the need
+        is an upper bound.
+
+        Args:
+            size: Combined size in bytes of the selected documents.
+        """
+        free = (free_bytes(self.out_dir)
+                if self.out_dir and self.docs is not None else None)
+        need = size * (2 if self.make_zip else 1)
+        if free is None:
+            self.space_note.value = ""
+        elif need > free:
+            self.space_note.value = (
+                f"Needs up to {human_size(need)} but only "
+                f"{human_size(free)} is free on this drive.")
+            self.space_note.color = ft.Colors.ERROR
+        else:
+            self.space_note.value = (
+                f"Needs up to {human_size(need)} · "
+                f"{human_size(free)} free on this drive.")
+            self.space_note.color = ft.Colors.ON_SURFACE_VARIANT
+
+    def _clear_picks(self, _e: Any) -> None:
+        """Forgets the hand-picked documents."""
+        self.picked.clear()
+        self._refresh_summary()
+
+    def _open_picker(self, _e: Any) -> None:
+        """Opens a dialog for ticking individual documents.
+
+        The list holds the documents that pass the other filters, so what
+        is ticked is always a subset of what the filters allow.
+        """
+        options, _ = self._options()
+        if options is None:
+            return
+        candidates = self._selected(options, ignore_ids=True)
+        search = ft.TextField(label="Search by name", dense=True,
+                              prefix_icon=ft.Icons.SEARCH)
+        status = muted("")
+        rows = ft.ListView(expand=True, spacing=0)
+
+        def matching() -> List[Dict[str, Any]]:
+            """Returns the candidates whose name contains the search."""
+            query = (search.value or "").strip().lower()
+            return [d for d in candidates if query in doc_label(d).lower()]
+
+        def show_status() -> None:
+            """Updates the line with the counts."""
+            found = len(matching())
+            more = (f" · showing the first {MAX_PICKER_ROWS}, search to "
+                    "narrow down" if found > MAX_PICKER_ROWS else "")
+            status.value = f"{found} documents{more} · {len(self.picked)} " \
+                "picked"
+
+        def make_row(doc: Dict[str, Any]) -> ft.Row:
+            """Builds a checkbox row for one document."""
+            def toggle(e: Any) -> None:
+                """Adds or removes the document from the picks."""
+                if e.control.value:
+                    self.picked.add(doc["id"])
+                else:
+                    self.picked.discard(doc["id"])
+                show_status()
+                self.page.update()
+
+            return ft.Row([
+                ft.Checkbox(label=doc_label(doc), expand=True,
+                            value=doc["id"] in self.picked,
+                            on_change=toggle),
+                muted(human_size(doc.get("originalSize") or 0))])
+
+        def render(_e: Any = None) -> None:
+            """Rebuilds the list for the current search."""
+            rows.controls = [make_row(d)
+                             for d in matching()[:MAX_PICKER_ROWS]]
+            show_status()
+            self.page.update()
+
+        def select_matching(_e: Any) -> None:
+            """Ticks every document matching the search, shown or not."""
+            self.picked.update(d["id"] for d in matching())
+            render()
+
+        def clear_matching(_e: Any) -> None:
+            """Unticks every document matching the search."""
+            self.picked.difference_update(d["id"] for d in matching())
+            render()
+
+        def done(_e: Any) -> None:
+            """Closes the dialog and applies the picks."""
+            self.page.pop_dialog()
+            self._refresh_summary()
+
+        search.on_change = render
+        render()
+        self.page.show_dialog(ft.AlertDialog(
+            modal=True, title=ft.Text("Pick documents"),
+            content=ft.Container(ft.Column([
+                search,
+                ft.Row([secondary("Select all matching", select_matching),
+                        secondary("Clear matching", clear_matching)],
+                       spacing=12),
+                status, rows], spacing=8), width=640, height=440),
+            actions=[ft.TextButton("Done", on_click=done)]))
 
     # ------------------------------------------------------------------
     # Screen 3: Export
@@ -709,9 +935,10 @@ class App:
         """
         self.options = options
         self.cancel.clear()
+        self.started = time.monotonic()
         self._show_export(options)
-        org = [o for o in self.orgs if o["id"] == self.org_id]
-        self.page.run_thread(self._export_worker, org, options,
+        self.page.run_thread(self._export_worker,
+                             self._orgs_for(self.org_id), options,
                              self.out_dir)
 
     def _rerun_failed(self, _e: Any) -> None:
@@ -736,6 +963,7 @@ class App:
             f"{LAYOUT_LABELS[options.layout].lower()} · saving to "
             f"{self.out_dir}")
         self.count = ft.Text("Preparing…", weight=ft.FontWeight.W_600)
+        self.speed = muted("", 13)
         self.bar = ft.ProgressBar(value=None, border_radius=5)
         labels = {"ok": "Downloaded", "skipped": "Skipped",
                   "repaired": "Repaired", "failed": "Failed",
@@ -766,7 +994,9 @@ class App:
                                     disabled=True)
         self._show(3, [
             heading(self.title, subtitle),
-            card(self.count, self.bar, tiles),
+            card(ft.Row([self.count, self.speed],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                 self.bar, tiles),
             log_box,
         ], self._actions(
             [self.cancel_btn, self.retry_btn, self.again_btn],
@@ -800,7 +1030,31 @@ class App:
         self.count.value = f"{done} of {total}"
         for key, text in self.counters.items():
             text.value = str(getattr(result, key))
+        self.speed.value = self._speed_text(result)
         self.page.update()
+
+    def _speed_text(self, result: pe.ExportResult) -> str:
+        """Describes progress in bytes, with speed and time left.
+
+        The speed counts only bytes really downloaded, so files that are
+        skipped finish instantly without inflating it. shortcut: the
+        estimate assumes the rest needs downloading too, so it errs on the
+        long side when many files turn out to be present already.
+
+        Args:
+            result: The running totals.
+        """
+        if not result.bytes_total:
+            return ""
+        text = (f"{human_size(result.bytes_done)} of "
+                f"{human_size(result.bytes_total)}")
+        elapsed = time.monotonic() - self.started
+        remaining = result.bytes_total - result.bytes_done
+        if not result.bytes_downloaded or elapsed < 1 or remaining <= 0:
+            return text
+        rate = result.bytes_downloaded / elapsed
+        return (f"{text} · {human_size(rate)}/s · about "
+                f"{fmt_duration(remaining / rate)} left")
 
     def _export_worker(self, orgs: List[Dict[str, Any]],
                        options: pe.ExportOptions, out: str) -> None:
@@ -838,6 +1092,15 @@ class App:
         self.title.value = title
         if self.bar.value is None:
             self.bar.value = 0
+        elapsed = time.monotonic() - self.started
+        if result and result.bytes_downloaded:
+            self.speed.value = (f"{human_size(result.bytes_downloaded)} "
+                                f"downloaded in {fmt_duration(elapsed)}")
+        elif result:
+            self.speed.value = ""
+        if elapsed >= NOTIFY_AFTER and not (result and result.cancelled):
+            beep()
+            self.page.run_task(self.page.window.to_front)
         self.zip_result = result.zip_path if result else None
         self.cancel_btn.visible = False
         self.again_btn.visible = True
@@ -866,6 +1129,7 @@ class App:
         """Opens the zip archive that was created."""
         if self.zip_result is not None:
             open_path(self.zip_result)
+
 
 def main(page: ft.Page) -> None:
     """Flet entry point.

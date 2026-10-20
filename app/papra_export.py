@@ -350,6 +350,7 @@ class ExportOptions:
         names: Only documents whose name matches one of these patterns: a
             case-insensitive substring, or a wildcard pattern if it contains
             ``*``, ``?`` or ``[``.
+        ids: Only documents with these IDs (a hand-picked selection).
         retry_failed: Only documents the manifest records as failed or as
             a hash mismatch; they are downloaded again unconditionally.
         include_trash: Also export trashed documents.
@@ -373,6 +374,7 @@ class ExportOptions:
     date_field: str = "document"
     mime_types: List[str] = field(default_factory=list)
     names: List[str] = field(default_factory=list)
+    ids: List[str] = field(default_factory=list)
     retry_failed: bool = False
     include_trash: bool = False
     id_prefix: bool = False
@@ -386,7 +388,7 @@ class ExportOptions:
     def has_filters(self) -> bool:
         """Whether any option narrows down the selection of documents."""
         return bool(self.tags or self.since or self.until or self.mime_types
-                    or self.names or self.retry_failed)
+                    or self.names or self.ids or self.retry_failed)
 
     def describe_filters(self) -> str:
         """Returns the active filters as one human-readable line."""
@@ -401,6 +403,8 @@ class ExportOptions:
             parts.append("type " + ", ".join(self.mime_types))
         if self.names:
             parts.append("name " + ", ".join(repr(n) for n in self.names))
+        if self.ids:
+            parts.append(f"{len(self.ids)} hand-picked")
         if self.retry_failed:
             parts.append("previously failed only")
         return "; ".join(parts) or "all documents"
@@ -548,6 +552,9 @@ def select_documents(docs: List[Document], options: ExportOptions
     Returns:
         The documents that pass all filters, in their original order.
     """
+    if options.ids:
+        wanted = set(options.ids)
+        docs = [d for d in docs if d["id"] in wanted]
     if options.tags:
         docs = filter_by_tags(docs, options.tags, options.match_all)
     if options.since or options.until:
@@ -977,6 +984,11 @@ class ExportResult:
         failed: Documents that could not be downloaded.
         cancelled: True if the run was stopped through the cancel event.
         zip_path: The zip archive that was created, if any.
+        bytes_total: Combined size of the documents selected so far.
+        bytes_done: Combined size of the documents finished so far,
+            whatever their outcome.
+        bytes_downloaded: Combined size of the documents that were really
+            downloaded (not skipped or failed); basis for a speed figure.
     """
 
     expected: int = 0
@@ -987,6 +999,9 @@ class ExportResult:
     failed: int = 0
     cancelled: bool = False
     zip_path: Optional[Path] = None
+    bytes_total: int = 0
+    bytes_done: int = 0
+    bytes_downloaded: int = 0
 
     @property
     def has_problems(self) -> bool:
@@ -1154,6 +1169,8 @@ def run_export(base: str, token: str, out: Path, orgs: List[Document],
                     log_fn(f"  {len(docs)} match: "
                            f"{options.describe_filters()}")
                 result.expected += len(docs)
+                result.bytes_total += sum(
+                    d.get("originalSize") or 0 for d in docs)
                 folder = org_dir / "_trash" if trash else org_dir
                 paths = plan_filenames(docs, options.id_prefix,
                                        options.layout, options.date_field)
@@ -1194,6 +1211,10 @@ def run_export(base: str, token: str, out: Path, orgs: List[Document],
                         log_fn(f"[{done}/{len(jobs)}] {status}{note}: "
                                f"{dest.relative_to(out)}")
                     setattr(result, status, getattr(result, status) + 1)
+                    size = d.get("originalSize") or 0
+                    result.bytes_done += size
+                    if status in ("ok", "repaired", "hash_mismatch"):
+                        result.bytes_downloaded += size
                     manifest.append({
                         "id": d["id"],
                         "organization": org_name,

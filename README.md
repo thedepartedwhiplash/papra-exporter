@@ -1,16 +1,17 @@
 # Papra Mass Exporter
 
-A bulk document exporter for self-hosted [Papra](https://papra.app) instances. It downloads the original file of every document in one or more organizations, optionally filtered by tag, date, file type or name, verifies each download against the SHA-256 hash recorded by Papra, and writes a `manifest.json` describing everything it exported. I created this app as Papra currently has no native mass export feature. In the future, Papra may add this fucntionality, upon which this app will be obsolete.
+A bulk document exporter for self-hosted [Papra](https://papra.app) instances. It downloads the original file of every document in one or more organizations, optionally filtered by tag, date, file type or name, verifies each download against the SHA-256 hash recorded by Papra, and writes a `manifest.json` describing everything it exported. I created this app as Papra currently has no native mass export feature. In the future, Papra may add this functionality, upon which this app will be obsolete.
 
 The project ships two entry points:
 
 - **`app/papra_export.py`** — a command-line tool built on the Python standard library only. No third-party packages are required to run it.
-- **`app/papra_gui.py`** — a Flet desktop GUI that wraps the exporter with a three-step wizard (Connect → Select → Export), live progress, and an on-screen log.
+- **`app/papra_gui.py`** — a Flet desktop GUI that wraps the exporter with a three-step wizard (Connect → Select → Export), live progress, and an on-screen log. The GUI is purely optional and only exists to provide a more user-friendly interface, and extra convenience over the command-line.
 
 ## Features
 
 - Exports every document from one or more Papra organizations.
 - Flexible filters that combine with AND: tags (match any or all selected tags), a date range (`--since` / `--until`), MIME type or file extension (`--type`), and a name substring or wildcard pattern (`--name`).
+- Hand-pick individual documents from the filtered results in the GUI using a searchable picker.
 - Optional inclusion of trashed documents.
 - Organizes output with a folder layout: all in one folder, by year, by year and month, or by first tag.
 - Sets saved files' modification times to the document dates (opt out with `--no-preserve-dates`).
@@ -21,6 +22,7 @@ The project ships two entry points:
 - Concurrent downloads with configurable worker count.
 - Cross-platform, filesystem-safe filename sanitization (handles Windows reserved names, illegal characters, and duplicate names).
 - Manifest captures tags, notes, dates, custom properties, hash, saved path, and per-document status.
+- In the GUI: live progress with transferred size, download speed and a time-left estimate, a free-space check for the output drive, and a sound plus window focus when a long export finishes.
 
 ## Requirements
 
@@ -105,10 +107,10 @@ uv run python app/papra_gui.py
 The GUI walks through three steps:
 
 1. **Connect** — enter the server URL and API token, then test the connection. The token is never written to disk and must be re-entered each session.
-2. **Select** — choose an organization and tags (any/all), apply filters (date range, file type, name), decide whether to include trash, pick a folder layout and output folder, and toggle options such as preserving file dates, verifying existing files, creating a zip archive, or retrying only previously failed documents.
-3. **Export** — watch live progress and per-status counters (downloaded, skipped, repaired, failed, hash mismatch), cancel a running export, retry failed documents, and open the output folder, zip archive, or manifest when finished.
+2. **Select** — choose an organization or **All organizations**, pick tags (any/all), apply filters (date range, file type, name), and optionally hand-pick individual documents from the filtered results with a searchable picker. Decide whether to include trash, pick a folder layout and output folder, and toggle options such as preserving file dates, verifying existing files, creating a zip archive, or retrying only previously failed documents. The summary shows the match count and total size, and warns if the output drive may not have enough free space.
+3. **Export** — watch live progress and per-status counters (downloaded, skipped, repaired, failed, hash mismatch), along with transferred size, download speed and a time-left estimate. Cancel a running export, retry failed documents, and open the output folder, zip archive, or manifest when finished. Exports that run for a while play a short sound and bring the window to the front when done.
 
-The server URL, User-Agent, output folder, folder layout, date and verification preferences, and theme are remembered in `~/.papra-exporter.json`. Filter selections are not remembered.
+The server URL, User-Agent, output folder, folder layout, date and verification preferences, and theme are remembered in `~/.papra-exporter.json`. Filter selections and hand-picked documents are not remembered.
 
 ## Building binaries
 
@@ -120,6 +122,16 @@ flet build linux     # or macos / windows
 ```
 
 Flet packages a Python app rooted at a directory (default `.`) and expects a `main.py` entry point, so rename or add a `main.py` that launches `papra_gui.py` if needed. Prebuilt binaries, where provided, are distributed as-is (see the disclaimer below).
+
+### Fast builds with `flet pack`
+
+If you just want a desktop binary quickly, `flet pack` is a lighter-weight alternative to `flet build`. It wraps PyInstaller and turns the script directly into an executable for the current platform, without the fuller Flet build pipeline:
+
+```bash
+uv run --extra build flet pack ./app/papra_gui.py
+```
+
+`flet pack` requires PyInstaller, which is declared as the optional `build` extra in `pyproject.toml`, so select it with `--extra build` (otherwise you get `No module named 'PyInstaller'`). The result is written to `dist/` (on Linux, `dist/papra_gui` plus a `papra_gui.desktop` entry). Because PyInstaller does not cross-compile, the binary only runs on the OS and architecture it was built on.
 
 ## Disclaimer
 
