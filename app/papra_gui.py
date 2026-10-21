@@ -23,6 +23,7 @@ layout, date and verification preferences and the theme are remembered in
 import dataclasses
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -61,6 +62,26 @@ ALL_ORGS = "__all__"
 NOTIFY_AFTER = 10
 # Rows shown in the document picker; longer lists are narrowed by search.
 MAX_PICKER_ROWS = 200
+# Fonts are bundled with the app under the assets directory, so the GUI
+# never downloads anything; the paths are relative to that directory.
+FONT_SANS = "IBM Plex Sans"
+FONT_MONO = "IBM Plex Mono"
+FONT_FILES = {
+    FONT_SANS: "fonts/IBMPlexSans-Regular.ttf",
+    FONT_MONO: "fonts/IBMPlexMono-Regular.ttf",
+}
+# Colors of the log lines and the finish banner, per theme.
+KIND_COLORS = {
+    True: {"ok": ft.Colors.GREEN_300, "skipped": ft.Colors.AMBER_300,
+           "repaired": ft.Colors.LIGHT_BLUE_300, "mismatch": ft.Colors.RED_300,
+           "failed": ft.Colors.RED_300, "header": ft.Colors.TEAL_200},
+    False: {"ok": ft.Colors.GREEN_800, "skipped": ft.Colors.AMBER_900,
+            "repaired": ft.Colors.BLUE_800, "mismatch": ft.Colors.RED_800,
+            "failed": ft.Colors.RED_800, "header": ft.Colors.TEAL_800},
+}
+LOG_LINE = re.compile(
+    r"^\[\d+/\d+\] (FAILED|ok|skipped|repaired|hash_mismatch)")
+HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 def load_settings() -> Dict[str, Any]:
@@ -196,6 +217,87 @@ def beep() -> None:
         pass
 
 
+def log_kind(line: str) -> str:
+    """Classifies a log line for coloring.
+
+    Args:
+        line: One line of ``papra_export`` output.
+
+    Returns:
+        ``ok``, ``skipped``, ``repaired``, ``mismatch``, ``failed``,
+        ``header`` or ``other``.
+    """
+    m = LOG_LINE.match(line)
+    if m:
+        word = m.group(1)
+        return {"hash_mismatch": "mismatch", "FAILED": "failed"}.get(
+            word, word)
+    if line.startswith("ERROR"):
+        return "failed"
+    if line.startswith("== "):
+        return "header"
+    return "other"
+
+
+def kind_color(kind: str, dark: bool) -> str:
+    """Returns the color for a line or banner kind in the given theme."""
+    return KIND_COLORS[dark].get(kind, ft.Colors.ON_SURFACE_VARIANT)
+
+
+def tag_color(value: Any) -> Optional[str]:
+    """Returns a tag color if it is a ``#RRGGBB`` string, else None."""
+    return value if isinstance(value, str) and HEX_COLOR.match(value) \
+        else None
+
+
+def plural(n: int, word: str) -> str:
+    """Returns ``n`` with ``word`` made plural when needed."""
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def finish_summary(result: Optional[pe.ExportResult], verify: bool
+                   ) -> Tuple[Any, str, str, str]:
+    """Describes how an export ended for the banner.
+
+    Args:
+        result: The outcome; None after a crash.
+        verify: Whether existing files were verified in this run.
+
+    Returns:
+        A tuple ``(icon, kind, headline, detail)``.
+    """
+    if result is None:
+        return (ft.Icons.ERROR_OUTLINE, "failed",
+                "The export stopped unexpectedly", "See the log for details.")
+    handled = (result.ok + result.skipped + result.repaired
+               + result.hash_mismatch + result.failed)
+    if result.cancelled:
+        return (ft.Icons.PAUSE_CIRCLE_OUTLINE, "skipped", "Export cancelled",
+                f"{handled} of {plural(result.expected, 'document')} were "
+                "handled before stopping.")
+    if result.has_problems:
+        bad = result.failed + result.hash_mismatch
+        parts = [f"{n} {what}" for n, what in
+                 ((result.failed, "failed"),
+                  (result.hash_mismatch, "with a hash mismatch")) if n]
+        return (ft.Icons.WARNING_AMBER, "failed",
+                f"{bad} of {plural(result.expected, 'file')} need attention",
+                ", ".join(parts) + ". Use Retry failed to try them again.")
+    headline = f"All {plural(result.expected, 'file')} exported"
+    if verify:
+        detail = "Every file was checked against its stored hash."
+    else:
+        detail = (f"{result.ok + result.repaired} downloaded and "
+                  f"hash-checked, {result.skipped} already present.")
+    return ft.Icons.CHECK_CIRCLE, "ok", headline, detail
+
+
+def spinner_row(text: str) -> ft.Row:
+    """Builds a small spinner followed by a loading message."""
+    return ft.Row([ft.ProgressRing(width=16, height=16, stroke_width=2),
+                   muted(text, 14)], spacing=10)
+
+
 def muted(text: str, size: int = 12) -> ft.Text:
     """Builds a small, low-emphasis text."""
     return ft.Text(text, size=size, color=ft.Colors.ON_SURFACE_VARIANT)
@@ -212,13 +314,17 @@ def card(*controls: ft.Control) -> ft.Container:
         content=ft.Column(list(controls), spacing=14,
                           horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
         bgcolor=ft.Colors.SURFACE_CONTAINER, padding=20, border_radius=12,
-        border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT))
+        border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
+        shadow=ft.BoxShadow(
+            blur_radius=12, offset=ft.Offset(0, 2),
+            color=ft.Colors.with_opacity(0.10, ft.Colors.BLACK)))
 
 
-def primary(text: str, on_click: Any, disabled: bool = False) -> ft.Button:
+def primary(text: str, on_click: Any, disabled: bool = False,
+            icon: Optional[ft.IconData] = None) -> ft.Button:
     """Builds the filled accent button."""
     return ft.Button(
-        text, on_click=on_click, disabled=disabled, height=44,
+        text, on_click=on_click, disabled=disabled, icon=icon, height=44,
         style=ft.ButtonStyle(
             bgcolor={
                 ft.ControlState.DEFAULT: BUTTON_BG,
@@ -280,8 +386,11 @@ class App:
 
         page.title = "Papra Exporter"
         page.padding = 0
-        page.theme = ft.Theme(color_scheme_seed=ft.Colors.TEAL)
-        page.dark_theme = ft.Theme(color_scheme_seed=ft.Colors.TEAL)
+        page.fonts = dict(FONT_FILES)
+        page.theme = ft.Theme(color_scheme_seed=ft.Colors.TEAL,
+                              font_family=FONT_SANS)
+        page.dark_theme = ft.Theme(color_scheme_seed=ft.Colors.TEAL,
+                                   font_family=FONT_SANS)
         page.theme_mode = (ft.ThemeMode.LIGHT
                            if self.settings.get("theme") == "light"
                            else ft.ThemeMode.DARK)
@@ -294,8 +403,16 @@ class App:
         self.rail = ft.Container(
             width=210, bgcolor=RAIL_BG,
             padding=ft.Padding.symmetric(vertical=24, horizontal=16))
+        # Screens fade into each other; each gets a new key so that the
+        # switcher sees a different child.
+        self.switcher = ft.AnimatedSwitcher(
+            content=ft.Container(), expand=True, duration=250,
+            transition=ft.AnimatedSwitcherTransition.FADE)
+        self.screens = 0
+        self.tag_colors: Dict[str, str] = {}
+        self.banner_kind = "ok"
         self.body = ft.Container(
-            expand=True,
+            self.switcher, expand=True,
             padding=ft.Padding.symmetric(vertical=28, horizontal=32))
 
         # Connect-screen controls live for the whole session so that going
@@ -314,10 +431,16 @@ class App:
                    "HTTP 403.",
             helper_max_lines=3,
             on_change=self._reset_connection)
-        self.status = ft.Text("", size=13, selectable=True)
-        self.test_btn = secondary("Test connection", self._on_test)
+        self.status = ft.Text("", size=13, selectable=True, expand=True)
+        self.status_icon = ft.Icon(ft.Icons.CHECK_CIRCLE, size=18,
+                                   visible=False)
+        self.status_ring = ft.ProgressRing(width=16, height=16,
+                                           stroke_width=2, visible=False)
+        self.test_btn = secondary("Test connection", self._on_test,
+                                  icon=ft.Icons.NETWORK_CHECK)
         self.continue_btn = primary("Continue", self._show_select,
-                                    disabled=True)
+                                    disabled=True,
+                                    icon=ft.Icons.ARROW_FORWARD)
 
         page.add(ft.Row([self.rail, self.body], expand=True, spacing=0))
         self._show_connect()
@@ -335,15 +458,24 @@ class App:
     def _rail_content(self) -> ft.Control:
         """Builds the left rail: title, step indicator and theme toggle."""
         items: List[ft.Control] = [ft.Container(
-            ft.Text("Papra Exporter", size=16, weight=ft.FontWeight.W_600,
-                    color=ft.Colors.WHITE),
-            padding=ft.Padding.only(left=8, bottom=18))]
+            ft.Row([ft.Icon(ft.Icons.CLOUD_DOWNLOAD, color=ACCENT, size=20),
+                    ft.Text("Papra Exporter", size=16,
+                            weight=ft.FontWeight.W_600,
+                            color=ft.Colors.WHITE)], spacing=10),
+            padding=ft.Padding.symmetric(vertical=14, horizontal=12),
+            border_radius=10, margin=ft.Margin.only(bottom=14),
+            gradient=ft.LinearGradient(
+                begin=ft.Alignment.TOP_LEFT, end=ft.Alignment.BOTTOM_RIGHT,
+                colors=["#134E4A", RAIL_BG]))]
         for n, name in enumerate(STEPS, 1):
             active, done = n == self.step, n < self.step
             ring = ACCENT if (active or done) else "#6B7B8C"
+            mark: ft.Control = (
+                ft.Icon(ft.Icons.CHECK, size=14, color=ACCENT) if done
+                else ft.Text(str(n), size=12,
+                             color="#06312C" if active else RAIL_TEXT))
             dot = ft.Container(
-                ft.Text(str(n), size=12,
-                        color="#06312C" if active else RAIL_TEXT),
+                mark,
                 width=22, height=22, border_radius=11,
                 alignment=ft.Alignment.CENTER, border=ft.Border.all(1.5, ring),
                 bgcolor=ACCENT if active else None)
@@ -378,8 +510,10 @@ class App:
         column = ft.Column(
             content, spacing=16, expand=True,
             scroll=ft.ScrollMode.AUTO if scroll else None)
-        self.body.content = ft.Column([column, actions], spacing=16,
-                                      expand=True)
+        self.screens += 1
+        self.switcher.content = ft.Column(
+            [column, actions], spacing=16, expand=True,
+            key=f"screen-{self.screens}")
         self.page.update()
 
     def _toggle_theme(self, _e: Any) -> None:
@@ -390,7 +524,26 @@ class App:
         self.settings["theme"] = "light" if dark else "dark"
         save_settings(self.settings)
         self.rail.content = self._rail_content()
+        if self.step == 3:
+            self._repaint_log()
         self.page.update()
+
+    def _repaint_log(self) -> None:
+        """Recolors the log lines and banner for the current theme."""
+        dark = self.page.theme_mode == ft.ThemeMode.DARK
+        for line in self.log_view.controls:
+            if isinstance(line, ft.Text):
+                line.color = kind_color(line.data, dark)
+        self._paint_banner()
+
+    def _paint_banner(self) -> None:
+        """Colors the finish banner for its kind and the current theme."""
+        color = kind_color(self.banner_kind,
+                           self.page.theme_mode == ft.ThemeMode.DARK)
+        self.banner.bgcolor = ft.Colors.with_opacity(0.12, color)
+        self.banner.border = ft.Border.all(1, color)
+        self.banner_icon.color = color
+        self.banner_head.color = color
 
     @staticmethod
     def _actions(left: List[ft.Control], right: List[ft.Control]) -> ft.Row:
@@ -412,7 +565,8 @@ class App:
                           "instance.")),
             card(self.url, self.token_field, self.ua,
                  ft.Row([self.test_btn], spacing=14),
-                 self.status),
+                 ft.Row([self.status_ring, self.status_icon, self.status],
+                        spacing=8)),
         ], self._actions(
             [muted("Token needs organizations:read and documents:read. "
                    "It is not saved.")],
@@ -423,20 +577,25 @@ class App:
 
         Args:
             text: The message.
-            kind: ``"ok"``, ``"error"`` or ``"info"``; chooses the color.
+            kind: ``"ok"``, ``"error"``, ``"busy"`` (shows a spinner) or
+                ``"info"``; chooses the color and icon.
         """
         self.status.value = text
         self.status.color = {"ok": ft.Colors.GREEN_400,
                              "error": ft.Colors.ERROR}.get(
                                  kind, ft.Colors.ON_SURFACE_VARIANT)
+        self.status_ring.visible = bool(text) and kind == "busy"
+        self.status_icon.visible = bool(text) and kind in ("ok", "error")
+        self.status_icon.icon = (ft.Icons.CHECK_CIRCLE if kind == "ok"
+                                 else ft.Icons.ERROR_OUTLINE)
+        self.status_icon.color = self.status.color
         self.page.update()
 
     def _reset_connection(self, _e: Any) -> None:
         """Invalidates a previous successful test after the form changed."""
         self.orgs = []
         self.continue_btn.disabled = True
-        self.status.value = ""
-        self.page.update()
+        self._set_status("", "info")
 
     def _on_test(self, _e: Any) -> None:
         """Starts the connection test in the background."""
@@ -453,7 +612,7 @@ class App:
         base = pe.normalize_base(url)
         self.test_btn.disabled = True
         self.continue_btn.disabled = True
-        self._set_status("Testing connection…", "info")
+        self._set_status("Testing connection…", "busy")
         try:
             pe.install_user_agent(
                 (self.ua.value or "").strip() or pe.DEFAULT_USER_AGENT)
@@ -582,12 +741,14 @@ class App:
         self.zip_note = muted("")
         self.space_note = muted("")
         self.pick_btn = secondary("Pick individual documents…",
-                                  self._open_picker, disabled=True)
+                                  self._open_picker, disabled=True,
+                                  icon=ft.Icons.CHECKLIST)
         self.pick_note = muted("")
         self.pick_clear = ft.TextButton(
             "Clear picks", on_click=self._clear_picks, visible=False)
         self.summary = ft.Text("", weight=ft.FontWeight.W_600)
-        self.start_btn = primary("Start export", self._start, disabled=True)
+        self.start_btn = primary("Start export", self._start, disabled=True,
+                                 icon=ft.Icons.DOWNLOAD)
         options = ft.Column([
             ft.Checkbox(label="Set file dates to the document dates",
                         value=self.preserve_dates,
@@ -629,7 +790,7 @@ class App:
                         spacing=12),
                  self.space_note, self.layout_dd, options),
         ], self._actions(
-            [secondary("Back", self._show_connect)],
+            [secondary("Back", self._show_connect, icon=ft.Icons.ARROW_BACK)],
             [self.summary, self.start_btn]))
         self._load_tags()
 
@@ -662,7 +823,7 @@ class App:
         self.docs = None
         self.tags.clear()
         self.picked.clear()
-        self.tags_row.controls = [muted("Loading tags…", 14)]
+        self.tags_row.controls = [spinner_row("Loading tags…")]
         self._refresh_summary()
         self.page.run_thread(self._fetch_tags, self.org_id)
 
@@ -689,6 +850,9 @@ class App:
             return
         self.docs = docs
         counts, _ = pe.tag_counts(docs)
+        self.tag_colors = {
+            t["name"]: c for d in docs for t in d.get("tags") or []
+            if t.get("name") and (c := tag_color(t.get("color")))}
         self.tags_row.controls = [
             self._make_chip(name, n) for name, n in
             sorted(counts.items(), key=lambda kv: kv[0].lower())
@@ -705,8 +869,13 @@ class App:
         Returns:
             The chip; clicking it toggles the tag in the selection.
         """
-        chip = ft.Chip(label=f"{name} ({count})",
-                       selected=name in self.tags)
+        color = self.tag_colors.get(name)
+        chip = ft.Chip(
+            label=f"{name} ({count})", selected=name in self.tags,
+            leading=ft.Container(
+                width=10, height=10, border_radius=5, bgcolor=color,
+                border=ft.Border.all(1, ft.Colors.OUTLINE)) if color
+            else None)
 
         def toggle(_e: Any) -> None:
             """Toggles this tag in the selection."""
@@ -965,6 +1134,16 @@ class App:
         self.count = ft.Text("Preparing…", weight=ft.FontWeight.W_600)
         self.speed = muted("", 13)
         self.bar = ft.ProgressBar(value=None, border_radius=5)
+        self.banner_icon = ft.Icon(ft.Icons.CHECK_CIRCLE, size=28)
+        self.banner_head = ft.Text("", size=16, weight=ft.FontWeight.W_600)
+        self.banner_detail = muted("", 13)
+        self.banner = ft.Container(
+            ft.Row([self.banner_icon,
+                    ft.Column([self.banner_head, self.banner_detail],
+                              spacing=2, expand=True)], spacing=14),
+            padding=14, border_radius=10, visible=False)
+        self.banner_kind = "ok"
+        self._paint_banner()
         labels = {"ok": "Downloaded", "skipped": "Skipped",
                   "repaired": "Repaired", "failed": "Failed",
                   "hash_mismatch": "Hash mismatch"}
@@ -982,21 +1161,24 @@ class App:
         log_box = ft.Container(
             self.log_view, expand=True, padding=12, border_radius=8,
             bgcolor=ft.Colors.SURFACE_CONTAINER_LOW)
-        self.cancel_btn = secondary("Cancel", self._on_cancel)
+        self.cancel_btn = secondary("Cancel", self._on_cancel,
+                                    icon=ft.Icons.CLOSE)
         self.retry_btn = secondary("Retry failed", self._rerun_failed,
-                                   visible=False)
+                                   visible=False, icon=ft.Icons.REPLAY)
         self.again_btn = secondary("New export", self._show_select,
-                                   visible=False)
+                                   visible=False, icon=ft.Icons.ADD)
         self.open_btn = secondary("Open folder", self._open_folder,
-                                  disabled=True)
-        self.zip_btn = secondary("Open zip", self._open_zip, visible=False)
+                                  disabled=True, icon=ft.Icons.FOLDER_OPEN)
+        self.zip_btn = secondary("Open zip", self._open_zip, visible=False,
+                                 icon=ft.Icons.FOLDER_ZIP)
         self.manifest_btn = primary("View manifest", self._open_manifest,
-                                    disabled=True)
+                                    disabled=True,
+                                    icon=ft.Icons.DESCRIPTION)
         self._show(3, [
             heading(self.title, subtitle),
             card(ft.Row([self.count, self.speed],
                         alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                 self.bar, tiles),
+                 self.bar, tiles, self.banner),
             log_box,
         ], self._actions(
             [self.cancel_btn, self.retry_btn, self.again_btn],
@@ -1011,9 +1193,11 @@ class App:
         """
         for line in msg.splitlines():
             if line.strip():
+                kind = log_kind(line)
                 self.log_view.controls.append(ft.Text(
-                    line, size=12, font_family="Consolas", selectable=True,
-                    color=ft.Colors.ON_SURFACE_VARIANT))
+                    line, size=12, font_family=FONT_MONO, selectable=True,
+                    data=kind, color=kind_color(
+                        kind, self.page.theme_mode == ft.ThemeMode.DARK)))
         del self.log_view.controls[:-MAX_LOG_LINES]
         self.page.update()
 
@@ -1101,6 +1285,13 @@ class App:
         if elapsed >= NOTIFY_AFTER and not (result and result.cancelled):
             beep()
             self.page.run_task(self.page.window.to_front)
+        icon, self.banner_kind, head, detail = finish_summary(
+            result, self.options.verify)
+        self.banner_icon.icon = icon
+        self.banner_head.value = head
+        self.banner_detail.value = detail
+        self.banner.visible = True
+        self._paint_banner()
         self.zip_result = result.zip_path if result else None
         self.cancel_btn.visible = False
         self.again_btn.visible = True
