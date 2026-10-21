@@ -133,7 +133,7 @@ If you just want a desktop binary quickly, `flet pack` is a lighter-weight alter
 uv run --extra build flet pack ./app/papra_gui.py --add-data "app/assets:assets"
 ```
 
-`flet pack` requires PyInstaller, which is declared as the optional `build` extra in `pyproject.toml`, so select it with `--extra build` (otherwise you get `No module named 'PyInstaller'`). The `--add-data` argument bundles the `app/assets` folder (fonts) so the packaged app works offline; on Windows use `;` instead of `:` as the separator. The result is written to `dist/` (on Linux, `dist/papra_gui` plus a `papra_gui.desktop` entry). Because PyInstaller does not cross-compile, the binary only runs on the OS and architecture it was built on.
+`flet pack` requires PyInstaller, which is declared as the optional `build` extra in `pyproject.toml`, so select it with `--extra build` (otherwise you get `No module named 'PyInstaller'`). The `--add-data` argument bundles the `app/assets` folder (fonts) so the packaged app works offline. Because PyInstaller does not cross-compile, the binary only runs on the OS and architecture it was built on.
 
 ## Disclaimer
 
