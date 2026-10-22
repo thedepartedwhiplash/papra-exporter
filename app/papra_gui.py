@@ -39,12 +39,33 @@ import flet as ft
 import papra_export as pe
 
 SETTINGS_PATH = Path.home() / ".papra-exporter.json"
-# The step rail stays dark in both themes, as in the mockup.
-RAIL_BG = "#17202B"
-RAIL_ACTIVE_BG = "#243342"
-RAIL_TEXT = "#C9D3DE"
-ACCENT = "#2DD4BF"
-BUTTON_BG = ft.Colors.TEAL_700
+# Papra's own colors (apps/papra-client/src/app.css in the Papra repo),
+# converted from HSL: coral in light mode, lime in dark mode.
+PAPRA_LIGHT = ft.ColorScheme(
+    primary="#FE7D4D", on_primary="#0A0A0A", secondary_container="#FFE1D6",
+    on_secondary_container="#0A0A0A", surface="#FFFFFF", on_surface="#0A0A0A",
+    on_surface_variant="#737373", outline="#A3A3A3",
+    outline_variant="#E5E5E5", surface_container_lowest="#FFFFFF",
+    surface_container_low="#F5F5F5", surface_container="#FAFAFA",
+    surface_container_high="#F5F5F5", surface_container_highest="#EBEBEB",
+    error="#EF4444", on_error="#0A0A0A")
+PAPRA_DARK = ft.ColorScheme(
+    primary="#D9FF7A", on_primary="#171717", secondary_container="#3C471F",
+    on_secondary_container="#FAFAFA", surface="#18181B", on_surface="#FAFAFA",
+    on_surface_variant="#A3A3A3", outline="#525252",
+    outline_variant="#2E2E32", surface_container_lowest="#101011",
+    surface_container_low="#101011", surface_container="#141415",
+    surface_container_high="#202022", surface_container_highest="#262626",
+    error="#E87D7D", on_error="#171717")
+# The step rail follows the theme, like Papra's sidebar.
+RAIL = {
+    True: {"bg": "#141415", "active": "#202022", "text": "#A3A3A3",
+           "title": "#FAFAFA", "accent": "#D9FF7A", "on_accent": "#171717",
+           "idle": "#525252", "glow": "#2C3318"},
+    False: {"bg": "#FAFAFA", "active": "#EFEFEF", "text": "#737373",
+            "title": "#0A0A0A", "accent": "#FE7D4D", "on_accent": "#0A0A0A",
+            "idle": "#A3A3A3", "glow": "#FFE1D6"},
+}
 # Lines kept in the on-screen log; older ones are dropped.
 MAX_LOG_LINES = 500
 STEPS = ["Connect", "Select", "Export"]
@@ -74,10 +95,10 @@ FONT_FILES = {
 KIND_COLORS = {
     True: {"ok": ft.Colors.GREEN_300, "skipped": ft.Colors.AMBER_300,
            "repaired": ft.Colors.LIGHT_BLUE_300, "mismatch": ft.Colors.RED_300,
-           "failed": ft.Colors.RED_300, "header": ft.Colors.TEAL_200},
+           "failed": ft.Colors.RED_300, "header": "#D9FF7A"},
     False: {"ok": ft.Colors.GREEN_800, "skipped": ft.Colors.AMBER_900,
             "repaired": ft.Colors.BLUE_800, "mismatch": ft.Colors.RED_800,
-            "failed": ft.Colors.RED_800, "header": ft.Colors.TEAL_800},
+            "failed": ft.Colors.RED_800, "header": "#C13401"},
 }
 LOG_LINE = re.compile(
     r"^\[\d+/\d+\] (FAILED|ok|skipped|repaired|hash_mismatch)")
@@ -327,9 +348,9 @@ def primary(text: str, on_click: Any, disabled: bool = False,
         text, on_click=on_click, disabled=disabled, icon=icon, height=44,
         style=ft.ButtonStyle(
             bgcolor={
-                ft.ControlState.DEFAULT: BUTTON_BG,
+                ft.ControlState.DEFAULT: ft.Colors.PRIMARY,
                 ft.ControlState.DISABLED: ft.Colors.SURFACE_CONTAINER_HIGHEST},
-            color={ft.ControlState.DEFAULT: ft.Colors.WHITE,
+            color={ft.ControlState.DEFAULT: ft.Colors.ON_PRIMARY,
                    ft.ControlState.DISABLED: ft.Colors.ON_SURFACE_VARIANT},
             shape=ft.RoundedRectangleBorder(radius=8)))
 
@@ -387,9 +408,8 @@ class App:
         page.title = "Papra Exporter"
         page.padding = 0
         page.fonts = dict(FONT_FILES)
-        page.theme = ft.Theme(color_scheme_seed=ft.Colors.TEAL,
-                              font_family=FONT_SANS)
-        page.dark_theme = ft.Theme(color_scheme_seed=ft.Colors.TEAL,
+        page.theme = ft.Theme(color_scheme=PAPRA_LIGHT, font_family=FONT_SANS)
+        page.dark_theme = ft.Theme(color_scheme=PAPRA_DARK,
                                    font_family=FONT_SANS)
         page.theme_mode = (ft.ThemeMode.LIGHT
                            if self.settings.get("theme") == "light"
@@ -401,7 +421,8 @@ class App:
         page.services.append(self.picker)
 
         self.rail = ft.Container(
-            width=210, bgcolor=RAIL_BG,
+            width=210,
+            bgcolor=RAIL[page.theme_mode == ft.ThemeMode.DARK]["bg"],
             padding=ft.Padding.symmetric(vertical=24, horizontal=16))
         # Screens fade into each other; each gets a new key so that the
         # switcher sees a different child.
@@ -457,40 +478,42 @@ class App:
 
     def _rail_content(self) -> ft.Control:
         """Builds the left rail: title, step indicator and theme toggle."""
+        dark = self.page.theme_mode == ft.ThemeMode.DARK
+        c = RAIL[dark]
         items: List[ft.Control] = [ft.Container(
-            ft.Row([ft.Icon(ft.Icons.CLOUD_DOWNLOAD, color=ACCENT, size=20),
+            ft.Row([ft.Icon(ft.Icons.CLOUD_DOWNLOAD, color=c["accent"],
+                            size=20),
                     ft.Text("Papra Exporter", size=16,
                             weight=ft.FontWeight.W_600,
-                            color=ft.Colors.WHITE)], spacing=10),
+                            color=c["title"])], spacing=10),
             padding=ft.Padding.symmetric(vertical=14, horizontal=12),
             border_radius=10, margin=ft.Margin.only(bottom=14),
             gradient=ft.LinearGradient(
                 begin=ft.Alignment.TOP_LEFT, end=ft.Alignment.BOTTOM_RIGHT,
-                colors=["#134E4A", RAIL_BG]))]
+                colors=[c["glow"], c["bg"]]))]
         for n, name in enumerate(STEPS, 1):
             active, done = n == self.step, n < self.step
-            ring = ACCENT if (active or done) else "#6B7B8C"
+            ring = c["accent"] if (active or done) else c["idle"]
             mark: ft.Control = (
-                ft.Icon(ft.Icons.CHECK, size=14, color=ACCENT) if done
+                ft.Icon(ft.Icons.CHECK, size=14, color=c["accent"]) if done
                 else ft.Text(str(n), size=12,
-                             color="#06312C" if active else RAIL_TEXT))
+                             color=c["on_accent"] if active else c["text"]))
             dot = ft.Container(
                 mark,
                 width=22, height=22, border_radius=11,
                 alignment=ft.Alignment.CENTER, border=ft.Border.all(1.5, ring),
-                bgcolor=ACCENT if active else None)
+                bgcolor=c["accent"] if active else None)
             items.append(ft.Container(
-                ft.Row([dot, ft.Text(name, color=(ft.Colors.WHITE if active
-                                                  else RAIL_TEXT))],
+                ft.Row([dot, ft.Text(name, color=(c["title"] if active
+                                                  else c["text"]))],
                        spacing=10),
                 padding=ft.Padding.symmetric(vertical=10, horizontal=8),
                 border_radius=8,
-                bgcolor=RAIL_ACTIVE_BG if active else None))
-        dark = self.page.theme_mode == ft.ThemeMode.DARK
+                bgcolor=c["active"] if active else None))
         items.append(ft.Container(expand=True))
         items.append(ft.IconButton(
             icon=ft.Icons.LIGHT_MODE if dark else ft.Icons.DARK_MODE,
-            icon_color=RAIL_TEXT, tooltip="Switch light / dark theme",
+            icon_color=c["text"], tooltip="Switch light / dark theme",
             on_click=self._toggle_theme))
         return ft.Column(items, spacing=6, expand=True)
 
@@ -523,6 +546,7 @@ class App:
                                 else ft.ThemeMode.DARK)
         self.settings["theme"] = "light" if dark else "dark"
         save_settings(self.settings)
+        self.rail.bgcolor = RAIL[not dark]["bg"]
         self.rail.content = self._rail_content()
         if self.step == 3:
             self._repaint_log()
