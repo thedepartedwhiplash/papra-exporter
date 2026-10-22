@@ -8,7 +8,8 @@ done by ``papra_export``; this module only builds the interface.
 
 Requirements:
   Python 3.10 or later and ``pip install flet``. ``papra_export.py`` must
-  sit next to this file.
+  sit next to this file, and the fonts listed in ``FONT_FILES`` must be in
+  the ``assets`` folder next to it.
 
 Typical usage example:
 
