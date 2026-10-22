@@ -83,16 +83,13 @@ ALL_ORGS = "__all__"
 NOTIFY_AFTER = 10
 # Rows shown in the document picker; longer lists are narrowed by search.
 MAX_PICKER_ROWS = 200
-# Fonts are fetched when the app starts; offline, Flet falls back to the
-# system font. shortcut: bundle the files in an assets folder to avoid the
-# download.
+# Fonts are bundled with the app under the assets directory, so the GUI
+# never downloads anything; the paths are relative to that directory.
 FONT_SANS = "IBM Plex Sans"
 FONT_MONO = "IBM Plex Mono"
-FONT_URLS = {
-    FONT_SANS: "https://raw.githubusercontent.com/IBM/plex/master/packages/"
-               "plex-sans/fonts/complete/ttf/IBMPlexSans-Regular.ttf",
-    FONT_MONO: "https://raw.githubusercontent.com/google/fonts/main/ofl/"
-               "ibmplexmono/IBMPlexMono-Regular.ttf",
+FONT_FILES = {
+    FONT_SANS: "fonts/IBMPlexSans-Regular.ttf",
+    FONT_MONO: "fonts/IBMPlexMono-Regular.ttf",
 }
 # Colors of the log lines and the finish banner, per theme.
 KIND_COLORS = {
@@ -410,7 +407,7 @@ class App:
 
         page.title = "Papra Exporter"
         page.padding = 0
-        page.fonts = dict(FONT_URLS)
+        page.fonts = dict(FONT_FILES)
         page.theme = ft.Theme(color_scheme=PAPRA_LIGHT, font_family=FONT_SANS)
         page.dark_theme = ft.Theme(color_scheme=PAPRA_DARK,
                                    font_family=FONT_SANS)
