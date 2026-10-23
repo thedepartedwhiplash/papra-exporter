@@ -1,6 +1,6 @@
 [project]
 name = "papra-exporter"
-version = "0.1.0"
+version = "1.0.0"
 description = "A GUI tool for exporting multiple Papra documents."
 readme = "README.md"
 requires-python = ">=3.14"
@@ -12,3 +12,11 @@ dependencies = [
 build = [
     "pyinstaller>=6.22.3",
 ]
+
+[tool.flet]
+product = "Papra Exporter"
+company = "Richard Morgan"
+copyright = "Copyright (c) 2026 Richard Morgan"
+
+[tool.flet.app]
+module = "papra_gui"
