@@ -100,6 +100,10 @@ If a server answers HTTP 403 even though the token is valid, a proxy or firewall
 
 ## GUI usage
 
+| Light | Dark |
+| --- | --- |
+| ![Papra Exporter GUI in light mode](docs/screenshots/papra_gui_light_mode.png) | ![Papra Exporter GUI in dark mode](docs/screenshots/papra_gui_dark_mode.png) |
+
 ```bash
 uv run python app/papra_gui.py
 ```
